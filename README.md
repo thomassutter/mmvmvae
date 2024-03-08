@@ -22,14 +22,14 @@ conda env create -f environment.yml
 ```
 
 ## Data
-The data for the PolyMNIST and the CelebA dataset can be download using the following commands
+The data for the PolyMNIST and the CelebA dataset can be downloaded using the following commands
 ```
 curl -L -o tmp.zip https://drive.google.com/drive/folders/1lr-laYwjDq3AzalaIe9jN4shpt1wBsYM?usp=sharing
 unzip tmp.zip
 unzip celeba_data.zip -d data/
 unzip PolyMNIST.zip -d data/
 ```
-The data for the Rats dataset can be download through the link: https://datadryad.org/stash/dataset/doi:10.7280/D14X30
+The data for the Rats dataset can be downloaded through the link: https://datadryad.org/stash/dataset/doi:10.7280/D14X30
 
 ## Experiments
 
