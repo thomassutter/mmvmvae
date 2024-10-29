@@ -12,7 +12,7 @@ from clfs.celeba_clf import ClfCelebA
 from config.MyClfConfig import MyClfConfig
 from config.MyClfConfig import ModelConfig
 from config.MyClfConfig import LogConfig
-from config.MyClfConfig import CelebADataConfig
+from config.DatasetConfig import CelebADataConfig
 
 cs = ConfigStore.instance()
 # Registering the Config class with the name 'config'.
@@ -28,7 +28,7 @@ def run_experiment(cfg: MyClfConfig):
     pl.seed_everything(cfg.seed, workers=True)
 
     # get data loaders
-    train_loader, train_dst, val_loader, val_dst = dataset.get_dataset(cfg)
+    train_loader, _, val_loader, _ = dataset.get_dataset(cfg)
 
     # load model
     model = ClfCelebA(cfg)

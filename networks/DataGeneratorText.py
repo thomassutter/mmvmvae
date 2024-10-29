@@ -1,3 +1,4 @@
+import torch
 import torch.nn as nn
 
 from networks.ResidualBlocks import ResidualBlock1dTransposeConv
@@ -130,8 +131,14 @@ class DataGeneratorText(nn.Module):
             dilation=1,
             output_padding=0,
         )
+        # self.linear_out = nn.Linear(
+        #     8192,
+        #     cfg.dataset.num_features * cfg.dataset.len_sequence,
+        # )
+        self.softmax = nn.LogSoftmax(dim=1)
 
     def forward(self, feats):
+        n_samples = feats.shape[0]
         d = self.resblock_1(feats)
         d = self.resblock_2(d)
         d = self.resblock_3(d)
@@ -139,4 +146,12 @@ class DataGeneratorText(nn.Module):
         d = self.resblock_5(d)
         d = self.resblock_6(d)
         d = self.conv2(d)
+        # d = torch.flatten(d, start_dim=1)
+        # d = self.linear_out(d)
+        # d = d.reshape(
+        #     n_samples,
+        #     self.cfg.dataset.num_features,
+        #     self.cfg.dataset.len_sequence,
+        # )
+        # d = self.softmax(d)
         return d

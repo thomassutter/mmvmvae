@@ -1,4 +1,5 @@
 import numpy as np
+import argparse
 import torch
 import os
 import glob
@@ -8,31 +9,7 @@ from torchvision.utils import save_image
 from torchvision import datasets, transforms
 from PIL import Image
 
-import hydra
-from hydra.core.config_store import ConfigStore
-from omegaconf import OmegaConf
-
 # from scipy import ndimage
-from config.MyMVWSLConfig import MyMVWSLConfig
-from config.MyMVWSLConfig import LogConfig
-from config.ModelConfig import JointModelConfig
-from config.ModelConfig import MixedPriorModelConfig
-from config.ModelConfig import UnimodalModelConfig
-from config.DatasetConfig import PMtranslatedData75Config
-from config.DatasetConfig import CelebADataConfig
-from config.MyMVWSLConfig import EvalConfig
-
-cs = ConfigStore.instance()
-# Registering the Config class with the name 'config'.
-cs.store(group="log", name="log", node=LogConfig)
-cs.store(group="model", name="joint", node=JointModelConfig)
-cs.store(group="model", name="mixedprior", node=MixedPriorModelConfig)
-cs.store(group="model", name="unimodal", node=UnimodalModelConfig)
-cs.store(group="eval", name="eval", node=EvalConfig)
-cs.store(group="dataset", name="PMtranslated75", node=PMtranslatedData75Config)
-cs.store(group="dataset", name="CelebA", node=CelebADataConfig)
-# cs.store(group="dataset", name="dataset", node=DataConfig)
-cs.store(name="base_config", node=MyMVWSLConfig)
 
 
 class PolyMNIST(Dataset):
@@ -119,7 +96,7 @@ class PolyMNIST(Dataset):
                 ]  # one permutation per modality and digit label
                 for i, ix in enumerate(ixs_perm):
                     # add background image
-                    new_img = MMNISTDataset._add_background_image(
+                    new_img = PolyMNIST._add_background_image(
                         background_images[m],
                         mnist.data[ix],
                         rotate_mnist=rotate_mnist,
@@ -161,15 +138,15 @@ class PolyMNIST(Dataset):
         if translate_mnist is True:
             mnist_image_tensor_downsampled = torch.nn.functional.interpolate(
                 mnist_image_tensor.unsqueeze(0).float(),
-                scale_factor=0.5,
+                scale_factor=0.75,
                 mode="bilinear",
             )
             mnist_image_tensor = mnist_image_tensor * 0  # black out everything
-            x = np.random.randint(0, 14)
-            y = np.random.randint(0, 14)
-            mnist_image_tensor[
-                :, x : x + 14, y : y + 14
-            ] = mnist_image_tensor_downsampled
+            x = np.random.randint(0, 21)
+            y = np.random.randint(0, 21)
+            mnist_image_tensor[:, x : x + 21, y : y + 21] = (
+                mnist_image_tensor_downsampled
+            )
 
         # binarize mnist image
         img_binarized = (mnist_image_tensor > 128).type(
@@ -225,33 +202,33 @@ class PolyMNIST(Dataset):
         return self.num_files
 
 
-@hydra.main(version_base=None, config_path="conf", config_name="config")
-def create_dataset(cfg: MyMVWSLConfig):
-    # create dataset
-    path_data_train = os.path.join(
-        cfg.dataset.dir_data_base, cfg.dataset.suffix_data_train
-    )
-    path_data_test = os.path.join(
-        cfg.dataset.dir_data_base, cfg.dataset.suffix_data_test
-    )
-    PolyMNIST._create_mmnist_dataset(
-        path_data_train,
-        cfg.dataset.backgroundimagepath,
-        cfg.dataset.num_views,
-        train=True,
-        rotate_mnist=(cfg.dataset.name == "PM_rotated"),
-        translate_mnist=(cfg.dataset.name == "PM_translated75"),
-    )
-    PolyMNIST._create_mmnist_dataset(
-        path_data_test,
-        cfg.dataset.backgroundimagepath,
-        cfg.dataset.num_views,
-        train=False,
-        rotate_mnist=(cfg.dataset.name == "PM_rotated"),
-        translate_mnist=(cfg.dataset.name == "PM_translated75"),
-    )
-
-
 if __name__ == "__main__":
-    create_dataset()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--num-modalities", type=int, default=5)
+    parser.add_argument("--savepath-train", type=str, required=True)
+    parser.add_argument("--savepath-test", type=str, required=True)
+    parser.add_argument("--backgroundimagepath", type=str, required=True)
+    parser.add_argument("--rotate-mnist", default=False, action="store_true")
+    parser.add_argument("--translate-mnist", default=False, action="store_true")
+    args = parser.parse_args()  # use vars to convert args into a dict
+    print("\nARGS:\n", args)
+
+    # create dataset
+    PolyMNIST._create_mmnist_dataset(
+        args.savepath_train,
+        args.backgroundimagepath,
+        args.num_modalities,
+        train=True,
+        rotate_mnist=args.rotate_mnist,
+        translate_mnist=args.translate_mnist,
+    )
+    PolyMNIST._create_mmnist_dataset(
+        args.savepath_test,
+        args.backgroundimagepath,
+        args.num_modalities,
+        train=False,
+        rotate_mnist=args.rotate_mnist,
+        translate_mnist=args.translate_mnist,
+    )
     print("Done.")

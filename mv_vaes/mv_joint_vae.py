@@ -21,8 +21,9 @@ class MVJointVAE(MVVAE):
     def log_additional_values_val(self):
         pass
 
-    def forward(self, batch):
+    def forward(self, batch, resample):
         data = batch[0]
+        labels = batch[1]
 
         mus = []
         lvs = []
@@ -53,6 +54,14 @@ class MVJointVAE(MVVAE):
             dists_out[key] = dist_out_m
         return (mods_rec, dists_out, dists_enc_out)
 
+    def get_reconstructions(self, mods_out, key, n_samples):
+        mod_rec = mods_out[key][0][:n_samples]
+        return mod_rec
+
+    def cond_generate_samples(self, m, z):
+        mod_c_gen_m_tilde = self.decoders[m](z)
+        return mod_c_gen_m_tilde
+
     def compute_loss(self, str_set, batch, forward_out):
         data, _ = batch
         data_rec = forward_out[0]
@@ -60,7 +69,7 @@ class MVJointVAE(MVVAE):
 
         # kl divergence of latent distribution
         klds = []
-        for key in self.modality_names:
+        for m, key in enumerate(self.modality_names):
             dist_m = dists_out[key]
             kld_m = self.kl_div_z(dist_m)
             klds.append(kld_m.unsqueeze(1))
@@ -71,7 +80,7 @@ class MVJointVAE(MVVAE):
         loss_rec, loss_rec_mods, loss_rec_mods_weighted = self.compute_rec_loss(
             data, data_rec
         )
-        for key in self.modality_names:
+        for m, key in enumerate(self.modality_names):
             self.log(
                 f"{str_set}/loss/weighted_rec_loss_{key}",
                 loss_rec_mods_weighted[key],

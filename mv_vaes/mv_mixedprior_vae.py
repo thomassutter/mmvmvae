@@ -1,4 +1,5 @@
 import torch
+from torch import nn
 from mv_vaes.mv_vae import MVVAE
 
 
@@ -34,10 +35,20 @@ class MVMixedPriorVAE(MVVAE):
             dists_out[key] = dist_out_m
         return (mods_rec, dists_out, dists_enc_out)
 
+    def get_reconstructions(self, mods_out, key, n_samples):
+        mod_rec = mods_out[key][0][:n_samples]
+        return mod_rec
+
+    def cond_generate_samples(self, m, z):
+        mod_c_gen_m_tilde = self.decoders[m](z)
+        return mod_c_gen_m_tilde
+
     def compute_loss(self, str_set, batch, forward_out):
-        imgs, _ = batch
+        imgs, labels = batch
         imgs_rec = forward_out[0]
         dists_out = forward_out[1]
+
+        # kl divergence of latent distribution
         priors = dists_out
 
         if self.cfg.model.alpha_annealing:
@@ -51,9 +62,9 @@ class MVMixedPriorVAE(MVVAE):
             alpha_weight = self.cfg.model.final_alpha_value
         self.log("alpha annealing", alpha_weight)
         klds = []
-        for key in self.modality_names:
+        for m, key in enumerate(self.modality_names):
             dist_m = dists_out[key]
-            for key_tilde in self.modality_names:
+            for m_tilde, key_tilde in enumerate(self.modality_names):
                 dist_m_tilde = priors[key_tilde]
                 kld_m_m_tilde = self.kl_div_z_two_dists(dist_m, dist_m_tilde)
                 # KL(q_m | q_m_tilde) * (1-alpha)
@@ -73,7 +84,7 @@ class MVMixedPriorVAE(MVVAE):
         loss_rec, loss_rec_mods, loss_rec_mods_weighted = self.compute_rec_loss(
             imgs, imgs_rec
         )
-        for key in self.modality_names:
+        for m, key in enumerate(self.modality_names):
             self.log(
                 f"{str_set}/loss/weighted_rec_loss_{key}",
                 loss_rec_mods_weighted[key],

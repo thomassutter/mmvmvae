@@ -41,6 +41,14 @@ class MVunimodalVAE(MVVAE):
         lvs = torch.cat(lvs, dim=1)
         return (mods_rec, dists_out, dists_enc_out)
 
+    def get_reconstructions(self, mods_out, key, n_samples):
+        mod_rec = mods_out[key][0][:n_samples]
+        return mod_rec
+
+    def cond_generate_samples(self, m, z):
+        mod_c_gen_m_tilde = self.decoders[m](z)
+        return mod_c_gen_m_tilde
+
     def compute_loss(self, str_set, batch, forward_out):
         data, _ = batch
         data_rec = forward_out[0]

@@ -1,8 +1,0 @@
-defaults:
-    - base_config
-    - log: log
-    - eval: eval
-    - model: mixedprior
-i     -batch_size: 512
-    - dataset: PMvanilla
-

@@ -103,11 +103,12 @@ class ClfCelebA(pl.LightningModule):
         data, labels = batch
         n_labels = labels.shape[1]
         preds = torch.zeros(
-            (cfg.model.batch_size, cfg.dataset.num_views, n_labels),
+            (cfg.model.batch_size_eval, cfg.dataset.num_views, n_labels),
             device=cfg.model.device,
         )
         losses = torch.zeros(
-            (cfg.model.batch_size, cfg.dataset.num_views, 1), device=cfg.model.device
+            (cfg.model.batch_size_eval, cfg.dataset.num_views, 1),
+            device=cfg.model.device,
         )
         for m, m_key in enumerate(data.keys()):
             m_val = data[m_key]

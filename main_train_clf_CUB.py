@@ -1,46 +1,42 @@
 import os
-import torch
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.loggers import WandbLogger
-from pytorch_lightning.utilities.model_summary import ModelSummary
-import wandb
 
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import OmegaConf
 import hydra
 from hydra.core.config_store import ConfigStore
 
-from config.MyClfRatsConfig import MyClfRatsConfig
-from config.MyClfRatsConfig import ModelConfig
-from config.MyClfRatsConfig import LogConfig
-from config.MyClfRatsConfig import DataConfig
-from config.MyClfRatsConfig import SPIKEDataConfig
+from config.MyClfConfig import MyClfConfig
+from config.MyClfConfig import ModelConfig
+from config.MyClfConfig import LogConfig
+from config.DatasetConfig import CUBDataConfig
+
+from utils import dataset
+from clfs.cub_clf import ClfCUB
 
 cs = ConfigStore.instance()
 # Registering the Config class with the name 'config'.
 cs.store(group="log", name="log", node=LogConfig)
 cs.store(group="model", name="model", node=ModelConfig)
-cs.store(group="dataset", name="SPIKE", node=SPIKEDataConfig)
-cs.store(name="base_config", node=MyClfRatsConfig)
+cs.store(group="dataset", name="CUB", node=CUBDataConfig)
+cs.store(name="base_config", node=MyClfConfig)
 
-from utils import dataset_rats
 
-from clfs.rats_clf import ClfRats
-
-@hydra.main(version_base=None, config_path="conf", config_name="config_clf")
-def run_experiment(cfg: MyClfRatsConfig):
+@hydra.main(version_base=None, config_path="config", config_name="config_clf")
+def run_experiment(cfg: MyClfConfig):
     print(cfg)
     pl.seed_everything(cfg.seed, workers=True)
 
     # get data loaders
-    train_loader, train_dst, val_loader, val_dst = dataset_rats.get_dataset(cfg)
+    train_loader, train_dst, val_loader, val_dst = dataset.get_dataset(cfg)
 
     # load model
-    model = ClfRats(cfg)
+    model = ClfCUB(cfg)
 
     # train the model (hint: here are some helpful Trainer arguments for rapid idea iteration)
     checkpoint_callback = ModelCheckpoint(
-        dirpath=os.path.join(cfg.dataset.dir_clfs_base, cfg.dataset.suffix_clfs),
+        dirpath=os.path.join(cfg.dataset.dir_clf),
         monitor=cfg.checkpoint_metric,
         mode="max",
         save_last=True,
@@ -66,9 +62,6 @@ def run_experiment(cfg: MyClfRatsConfig):
 
     trainer.logger.watch(model, log="all")
     trainer.fit(model=model, train_dataloaders=train_loader, val_dataloaders=val_loader)
-    # model.logger.log_metrics(
-    #     {f"final/accuracy/mean_acc" : model.final_accuracy}
-    # )
 
 
 if __name__ == "__main__":

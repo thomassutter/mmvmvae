@@ -4,11 +4,13 @@ import numpy as np
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score
 from sklearn.metrics import average_precision_score
+from sklearn.metrics import roc_auc_score
 
 import torch
 
 from clfs.polymnist_clf import ClfPolyMNIST
 from clfs.celeba_clf import ClfCelebA
+from clfs.cub_clf import ClfCUB
 
 
 def train_clf_lr_PM(encodings, labels):
@@ -43,6 +45,25 @@ def eval_clf_lr_celeba(clfs, encodings, labels):
         scores[k] = ap
     return scores
 
+def train_clf_lr_cub(encodings, labels):
+    n_labels = labels.shape[1]
+    clfs = []
+    for k in range(0, n_labels):
+        clf = LogisticRegression(max_iter=10000).fit(
+            encodings.cpu(), labels[:, k].cpu()
+        )
+        clfs.append(clf)
+    return clfs
+
+def eval_clf_lr_cub(clfs, encodings, labels):
+    n_labels = labels.shape[1]
+    scores = torch.zeros(n_labels)
+    for k in range(0, n_labels):
+        clf_k = clfs[k]
+        y_pred_k = clf_k.predict(encodings.cpu())
+        auroc = roc_auc_score(labels[:, k].cpu(), y_pred_k)
+        scores[k] = auroc
+    return scores
 
 def generate_samples(decoders, rep):
     imgs_gen = []
@@ -59,7 +80,8 @@ def conditional_generation(mvvae, dists):
         imgs_gen_dist = []
         for m in range(len(mvvae.decoders)):
             z_out = mvvae.reparametrize(mu, lv)
-            cond_gen_m = mvvae.decoders[m](z_out)[0]
+            cond_gen_m = mvvae.cond_generate_samples(m, z_out)[0]
+            # cond_gen_m = mvvae.decoders[m](z_out)[0]
             imgs_gen_dist.append(cond_gen_m)
         imgs_gen.append(imgs_gen_dist)
     return imgs_gen
@@ -70,6 +92,8 @@ def load_modality_clfs(cfg):
         model = load_modality_clfs_PM(cfg)
     elif cfg.dataset.name.startswith("celeba"):
         model = load_modality_clfs_celeba(cfg)
+    elif cfg.dataset.name.startswith("CUB"):
+        model = load_modality_clfs_cub(cfg)
     else:
         print("dataset does not exist..exit")
         sys.exit()
@@ -87,6 +111,11 @@ def load_modality_clfs_PM(cfg):
 def load_modality_clfs_celeba(cfg):
     fp_clf = os.path.join(cfg.dataset.dir_clf, "last.ckpt")
     model = ClfCelebA.load_from_checkpoint(fp_clf)
+    return model
+
+def load_modality_clfs_cub(cfg):
+    fp_clf = os.path.join(cfg.dataset.dir_clf, "last.ckpt")
+    model = ClfCUB.load_from_checkpoint(fp_clf)
     return model
 
 

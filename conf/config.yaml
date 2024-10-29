@@ -1,7 +1,0 @@
-defaults:
-    - base_config
-    - log: log
-    - eval: eval
-    - model: mixedprior
-    - dataset: CelebA
-

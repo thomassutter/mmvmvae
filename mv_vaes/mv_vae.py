@@ -1,20 +1,18 @@
 import sys
 import math
+from itertools import chain, combinations
 
 import torch
-from torch import nn
 import pytorch_lightning as pl
 import wandb
 
 from torchvision.utils import make_grid
 import torchvision.transforms.functional as t_f
+from torchvision.transforms import v2
 
-from networks.NetworksImgCelebA import EncoderImg, DecoderImg
-from networks.NetworksTextCelebA import EncoderText, DecoderText
-from networks.ConvNetworksPolyMNIST import Encoder, Decoder
-from networks.ConvNetworksPolyMNIST import ResnetEncoder, ResnetDecoder
 from utils.eval import train_clf_lr_PM, eval_clf_lr_PM
 from utils.eval import train_clf_lr_celeba, eval_clf_lr_celeba
+from utils.eval import train_clf_lr_cub, eval_clf_lr_cub
 from utils.eval import generate_samples
 from utils.eval import conditional_generation
 from utils.eval import calc_coherence_acc, calc_coherence_ap
@@ -23,6 +21,8 @@ from utils.eval import from_preds_to_acc
 from utils.eval import from_preds_to_ap
 
 from utils.text import create_txt_image
+from utils.fid import FrechetInceptionDistance
+from utils.vae import get_networks
 
 
 class MVVAE(pl.LightningModule):
@@ -30,46 +30,7 @@ class MVVAE(pl.LightningModule):
         super().__init__()
         self.cfg = cfg
 
-        if cfg.dataset.name.startswith("PM"):
-            if not cfg.model.use_resnets:
-                self.encoders = nn.ModuleList(
-                    [
-                        Encoder(cfg.model.latent_dim).to(cfg.model.device)
-                        for _ in range(cfg.dataset.num_views)
-                    ]
-                )
-                self.decoders = nn.ModuleList(
-                    [
-                        Decoder(cfg.model.latent_dim).to(cfg.model.device)
-                        for _ in range(cfg.dataset.num_views)
-                    ]
-                )
-            else:
-                self.encoders = nn.ModuleList(
-                    [
-                        ResnetEncoder(cfg).to(cfg.model.device)
-                        for _ in range(cfg.dataset.num_views)
-                    ]
-                )
-                self.decoders = nn.ModuleList(
-                    [
-                        ResnetDecoder(cfg).to(cfg.model.device)
-                        for _ in range(cfg.dataset.num_views)
-                    ]
-                )
-        elif cfg.dataset.name.startswith("celeba"):
-            self.encoders = nn.ModuleList(
-                [
-                    EncoderImg(cfg).to(cfg.model.device),
-                    EncoderText(cfg).to(cfg.model.device),
-                ]
-            )
-            self.decoders = nn.ModuleList(
-                [
-                    DecoderImg(cfg).to(cfg.model.device),
-                    DecoderText(cfg).to(cfg.model.device),
-                ]
-            )
+        self.encoders, self.decoders = get_networks(cfg)
 
         if cfg.dataset.name.startswith("PM"):
             self.train_clf_lr = train_clf_lr_PM
@@ -83,6 +44,9 @@ class MVVAE(pl.LightningModule):
             self.ref_mod_d_size = 3 * 28 * 28
             self.modalities_size = {
                 "m" + str(m): 3 * 28 * 28 for m in range(cfg.dataset.num_views)
+            }
+            self.betas = {
+                "m" + str(m): cfg.model.beta for m in range(cfg.dataset.num_views)
             }
         elif cfg.dataset.name.startswith("celeba"):
             self.train_clf_lr = train_clf_lr_celeba
@@ -110,6 +74,26 @@ class MVVAE(pl.LightningModule):
                     "img": cfg.dataset.img_size * cfg.dataset.img_size,
                     "text": cfg.dataset.img_size * cfg.dataset.img_size,
                 }
+        elif cfg.dataset.name.startswith("CUB"):
+            self.train_clf_lr = train_clf_lr_cub
+            self.eval_clf_lr = eval_clf_lr_cub
+            self.eval_downstream_task = self.eval_downstream_task_cub
+            self.calc_coherence = calc_coherence_ap
+            self.from_preds_to_clf_metric = from_preds_to_ap
+            self.modality_names = ["text", "img"]
+            self.betas = {"img": cfg.dataset.beta_img, "text": cfg.dataset.beta_text}
+            self.ref_mod_d_size = cfg.dataset.img_size * cfg.dataset.img_size
+            self.modalities_size = {
+                "img": cfg.dataset.img_size * cfg.dataset.img_size,
+                "text": cfg.dataset.len_sequence,
+            }
+
+        self.transforms = v2.Compose(
+            [
+                v2.ToDtype(torch.uint8, scale=True),
+            ]
+        )
+        self.initialize_fid_scores()
 
         if cfg.model.temp_annealing == "cosine":
             self.compute_current_temperature = self.cos_annealing
@@ -150,12 +134,23 @@ class MVVAE(pl.LightningModule):
             ),
         )
 
+    def initialize_fid_scores(self):
+        self.fid_scores = {}
+        for key in self.modality_names:
+            for key_tilde in self.modality_names:
+                if key_tilde == "text":
+                    continue
+                self.fid_scores[key + "_to_" + key_tilde] = FrechetInceptionDistance(
+                    compute_on_cpu=True,
+                    path_inception_weights=self.cfg.eval.path_inception_weights,
+                ).to(self.cfg.model.device)
+
     def training_step(self, batch, batch_idx):
         out = self.forward(batch)
         loss, _ = self.compute_loss("train", batch, out)
         bs = self.cfg.model.batch_size
         if len(self.training_step_outputs) * bs < self.cfg.eval.num_samples_train:
-            self.training_step_outputs.append([out, batch])
+            self.training_step_outputs.append([out[1:], batch])
         return loss
 
     def validation_step(self, batch, batch_idx):
@@ -172,15 +167,45 @@ class MVVAE(pl.LightningModule):
         else:
             pred_coh, cond_rec_loss = None, None
 
+        if (self.current_epoch + 1) % self.cfg.log.fid_logging_frequency == 0:
+            if batch_idx == 0:
+                self.initialize_fid_scores()
+            self.update_fid_scores(out, batch)
+
         self.last_val_batch = batch
         self.validation_step_outputs.append(
-            [out, batch[1], pred_coh, cond_rec_loss, rec_loss]
+            [out[1:], batch[1], pred_coh, cond_rec_loss, rec_loss]
         )
+
+        if (self.current_epoch + 1) % self.cfg.log.img_plotting_frequency == 0:
+            if len(self.validation_step_outputs) >= self.trainer.num_val_batches[0]:
+                n_samples_plot = min(100, self.cfg.model.batch_size_eval)
+                n_samples_row = int(math.sqrt(n_samples_plot))
+                # reconstructions
+                # for m in range(self.cfg.dataset.num_views):
+                for m, key in enumerate(self.modality_names):
+                    mod_m = self.last_val_batch[0][key][:n_samples_plot]
+                    mod_rec_m = self.get_reconstructions(out[0], key, n_samples_plot)
+                    if key == "text" and self.cfg.dataset.name.startswith("celeba"):
+                        mod_rec_m, txt_samples_rec = create_txt_image(
+                            self.cfg, mod_rec_m
+                        )
+                        mod_m, txt_samples_gt = create_txt_image(self.cfg, mod_m)
+                        self.log_txt_samples(
+                            txt_samples_rec, "val/txt_samples", "reconstructions"
+                        )
+                        self.log_txt_samples(txt_samples_gt, "val/txt_samples", "gt")
+                    elif key == "text":
+                        continue
+                    mod_grid_m = make_grid(
+                        torch.cat([mod_m, mod_rec_m], dim=0), nrow=n_samples_row
+                    )
+                    mod_grid_m = t_f.to_pil_image(mod_grid_m)
+                    self.logger.log_image(
+                        key="reconstructions " + key, images=[wandb.Image(mod_grid_m)]
+                    )
         self.log_additional_values(out)
         return loss
-
-    def forward(self, batch):
-        pass
 
     def evaluate_conditional_generation(self, out, batch):
         dists_enc_out = out[2]
@@ -191,7 +216,7 @@ class MVVAE(pl.LightningModule):
 
         preds = torch.zeros(
             (
-                self.cfg.model.batch_size,
+                self.cfg.model.batch_size_eval,
                 n_views,
                 n_views,
                 self.cfg.dataset.n_clfs_outputs,
@@ -206,14 +231,42 @@ class MVVAE(pl.LightningModule):
             # for m_tilde in range(n_views):
             for m_tilde, key_tilde in enumerate(self.modality_names):
                 z_m = self.reparametrize(mu_m, lv_m)
-                mod_c_gen_m_tilde = self.decoders[m_tilde](z_m)
-                mods_m_gen[key_tilde] = mod_c_gen_m_tilde[0]
+                mod_c_gen_m_tilde = self.cond_generate_samples(m_tilde, z_m)
+                if self.cfg.dataset.name.startswith("CUB") and key_tilde == "text":
+                    mods_m_gen[key_tilde] = mod_c_gen_m_tilde[0].argmax(dim=-1)
+                else:
+                    mods_m_gen[key_tilde] = mod_c_gen_m_tilde[0]
                 if m_tilde == m:
                     cond_rec[key] = mod_c_gen_m_tilde
             preds_m = self.calc_coherence(self.cfg, clfs_coherence, mods_m_gen, labels)
             preds[:, m] = preds_m
         cond_rec_loss, _, _ = self.compute_rec_loss(data, cond_rec)
         return preds, cond_rec_loss
+
+    def get_reconstructions(self, mods_out, key, n_samples):
+        raise NotImplementedError
+
+    def cond_generate_samples(self, m, z):
+        raise NotImplementedError
+
+    def update_fid_scores(self, out, batch):
+        dists_enc_out = out[2]
+        imgs = batch[0]
+        for _, key in enumerate(self.modality_names):
+            mu_m, lv_m = dists_enc_out[key]
+            for m_tilde, key_tilde in enumerate(self.modality_names):
+                if key_tilde == "text":
+                    continue
+                imgs_m_tilde = imgs[key_tilde]
+                fid = self.fid_scores[key + "_to_" + key_tilde]
+                z_m = self.reparametrize(mu_m, lv_m)
+                # mod_c_gen_m_tilde = self.decoders[m_tilde](z_m)
+                mod_c_gen_m_tilde = self.cond_generate_samples(m_tilde, z_m)
+                # compute fids between original and generated samples from key_tilde modality_names
+                # conditioned on key modality
+                fid.update(self.transforms(imgs_m_tilde), real=True)
+                fid.update(self.transforms(mod_c_gen_m_tilde[0]), real=False)
+                self.fid_scores[key + "_to_" + key_tilde]
 
     def on_validation_epoch_end(self):
         enc_mu_out_train = {key: [] for key in self.modality_names}
@@ -225,8 +278,8 @@ class MVVAE(pl.LightningModule):
         for idx, train_out in enumerate(self.training_step_outputs):
             out, batch = train_out
             data, labels = batch
-            dists_out = out[1]
-            dists_enc = out[2]
+            dists_out = out[0]
+            dists_enc = out[1]
             # for m in range(self.cfg.dataset.num_views):
             for m, key in enumerate(self.modality_names):
                 mu_out_m, lv_out_m = dists_out[key]
@@ -291,8 +344,8 @@ class MVVAE(pl.LightningModule):
                 rec_loss_batch,
             ) = val_out
             # imgs, labels = batch
-            dists_out = out[1]
-            dists_enc_out = out[2]
+            dists_out = out[0]
+            dists_enc_out = out[1]
             for m, key in enumerate(self.modality_names):
                 mu_out_m, lv_out_m = dists_out[key]
                 mu_enc_m, lv_enc_m = dists_enc_out[key]
@@ -371,7 +424,7 @@ class MVVAE(pl.LightningModule):
                 self.final_scores_lr_aggregated_alllabels = scores_agg
 
         if (self.current_epoch + 1) % self.cfg.log.img_plotting_frequency == 0:
-            n_samples_plot = min(100, self.cfg.model.batch_size)
+            n_samples_plot = min(100, self.cfg.model.batch_size_eval)
             n_samples_row = int(math.sqrt(n_samples_plot))
             # plotting samples
             # generate samples
@@ -382,7 +435,7 @@ class MVVAE(pl.LightningModule):
             # for m in range(self.cfg.dataset.num_views):
             for m, key in enumerate(self.modality_names):
                 random_gen_m = random_samples[m][:n_samples_plot]
-                if key == "text":
+                if key == "text" and self.cfg.dataset.name.startswith("celeba"):
                     random_gen_m, random_txt_samples = create_txt_image(
                         self.cfg, random_gen_m
                     )
@@ -391,6 +444,8 @@ class MVVAE(pl.LightningModule):
                         "val/txt_samples/random",
                         "random generations",
                     )
+                elif key == "text":
+                    continue
                 imgs_grid_m = make_grid(random_gen_m, nrow=n_samples_row)
                 imgs_grid_m = t_f.to_pil_image(imgs_grid_m)
                 self.logger.log_image(
@@ -398,42 +453,22 @@ class MVVAE(pl.LightningModule):
                     images=[wandb.Image(imgs_grid_m)],
                 )
 
-            # reconstructions
-            # for m in range(self.cfg.dataset.num_views):
-            for m, key in enumerate(self.modality_names):
-                mod_m = self.last_val_batch[0][key][:n_samples_plot]
-                mod_rec_m = out[0][key][0][:n_samples_plot]
-                if key == "text":
-                    mod_rec_m, txt_samples_rec = create_txt_image(self.cfg, mod_rec_m)
-                    mod_m, txt_samples_gt = create_txt_image(self.cfg, mod_m)
-                    self.log_txt_samples(
-                        txt_samples_rec, "val/txt_samples", "reconstructions"
-                    )
-                    self.log_txt_samples(txt_samples_gt, "val/txt_samples", "gt")
-                mod_grid_m = make_grid(
-                    torch.cat([mod_m, mod_rec_m], dim=0), nrow=n_samples_row
-                )
-                mod_grid_m = t_f.to_pil_image(mod_grid_m)
-                self.logger.log_image(
-                    key="reconstructions " + key, images=[wandb.Image(mod_grid_m)]
-                )
-
             # conditional generations
             # to start with: we only do conditional generation based on a single modality
             # and generate the remaining modalities
-            # TODO: change to all possible conditional generration paths
-            # for m in range(self.cfg.dataset.num_views):
             for m, key in enumerate(self.modality_names):
                 mod_m = self.last_val_batch[0][key][-n_samples_plot:]
                 mu_m_val = enc_mu_enc_val[key][-n_samples_plot:]
                 lv_m_val = enc_lv_enc_val[key][-n_samples_plot:]
                 dist_m = [mu_m_val, lv_m_val]
                 mod_gen_m = conditional_generation(self, [dist_m])[0]
-                if key == "text":
+                if key == "text" and self.cfg.dataset.name.startswith("celeba"):
                     mod_m, _ = create_txt_image(self.cfg, mod_m)
+                elif key == "text":
+                    continue
                 for m_tilde, key_tilde in enumerate(self.modality_names):
                     mod_gen_m_m_tilde = mod_gen_m[m_tilde]
-                    if key_tilde == "text":
+                    if key == "text" and self.cfg.dataset.name.startswith("celeba"):
                         mod_gen_m_m_tilde, txt_m_m_tilde = create_txt_image(
                             self.cfg, mod_gen_m_m_tilde
                         )
@@ -443,6 +478,8 @@ class MVVAE(pl.LightningModule):
                             "val/txt_samples",
                             f"cond_gen_{key}_{key_tilde}",
                         )
+                    elif key_tilde == "text":
+                        continue
                     mod_grid_m_m_tilde = make_grid(
                         torch.cat(
                             [mod_m.to(self.cfg.model.device), mod_gen_m_m_tilde], dim=0
@@ -453,6 +490,18 @@ class MVVAE(pl.LightningModule):
                     self.logger.log_image(
                         key="cond_gen_" + key + "_to_" + key_tilde,
                         images=[wandb.Image(mod_grid_m_m_tilde)],
+                    )
+
+        if (self.current_epoch + 1) % self.cfg.log.fid_logging_frequency == 0:
+            for m, key in enumerate(self.modality_names):
+                for m_tilde, key_tilde in enumerate(self.modality_names):
+                    if key_tilde == "text":
+                        continue
+                    fid = self.fid_scores[key + "_to_" + key_tilde]
+                    score_m_m_tilde = fid.compute()
+                    self.log(
+                        f"val/fid/{key}_to_{key_tilde}",
+                        score_m_m_tilde,
                     )
 
     def log_txt_samples(self, txt_samples, str_txt, str_title):
@@ -541,14 +590,39 @@ class MVVAE(pl.LightningModule):
                 self.log(f"val/downstream/{str_ds}/{key}/{l_name}", scores_m[k])
         return scores
 
+    def eval_downstream_task_cub(self, str_ds, clfs, enc_mu_val, labels_val):
+        n_labels = labels_val.shape[1]
+        scores = torch.zeros((self.cfg.dataset.num_views, n_labels))
+        for m, key in enumerate(self.modality_names):
+            clf_m = clfs[m]
+            enc_mu_m_val = enc_mu_val[key]
+            scores_m = self.eval_clf_lr(
+                clf_m,
+                enc_mu_m_val,
+                labels_val,
+            )
+            scores[m, :] = scores_m
+            self.log("val/downstream/" + str_ds + "/" + key, scores_m.mean())
+            for k, l_name in enumerate(self.label_names):
+                self.log(f"val/downstream/{str_ds}/{key}/{l_name}", scores_m[k])
+        return scores
+
     def kl_div_z(self, dist):
         mu, lv = dist
+        # prior_mu = torch.zeros_like(mu)
+        # prior_lv = torch.zeros_like(lv)
+        # prior_d = torch.distributions.normal.Normal(prior_mu, prior_lv.exp() + 1e-6)
+        # d1 = torch.distributions.normal.Normal(mu, lv.exp() + 1e-6)
+        # kld = torch.distributions.kl.kl_divergence(d1, prior_d).sum(dim=-1)
         kld = self.calc_kl_divergence(mu, lv)
         return kld
 
     def kl_div_z_two_dists(self, dist1, dist2):
         mu1, lv1 = dist1
         mu2, lv2 = dist2
+        # d1 = torch.distributions.normal.Normal(mu1, lv1.exp() + 1e-6)
+        # d2 = torch.distributions.normal.Normal(mu2, lv2.exp() + 1e-6)
+        # kld = torch.distributions.kl.kl_divergence(d1, d2).sum(dim=-1)
         kld = self.calc_kl_divergence(mu1, lv1, mu2, lv2)
         return kld
 
@@ -575,14 +649,21 @@ class MVVAE(pl.LightningModule):
         rec_loss_mods = {}
         rec_loss_mods_weighted = {}
         # output probability x_m
-        for key in data.keys():
+        for m, key in enumerate(data.keys()):
             mod_gt_m = data[key]
             mod_rec_m = data_rec[key]
             rec_weight_m = float(self.ref_mod_d_size / self.modalities_size[key])
             if key == "text":
-                mod_d_out_m = torch.distributions.one_hot_categorical.OneHotCategorical(
-                    logits=mod_rec_m[0], validate_args=False
-                )
+                if self.cfg.dataset.name.startswith("CUB"):
+                    mod_d_out_m = torch.distributions.one_hot_categorical.Categorical(
+                        logits=mod_rec_m[0], validate_args=False
+                    )
+                else:
+                    mod_d_out_m = (
+                        torch.distributions.one_hot_categorical.OneHotCategorical(
+                            logits=mod_rec_m[0], validate_args=False
+                        )
+                    )
                 log_p_mod_m = mod_d_out_m.log_prob(mod_gt_m).sum(dim=[1])
             else:
                 mod_d_out_m = torch.distributions.laplace.Laplace(
@@ -646,7 +727,29 @@ class MVVAE(pl.LightningModule):
         return joint_mu, joint_lv
 
     def aggregate_latents_mopoe(self, mus, lvs):
-        pass
+        xs = range(0, mus.shape[1])
+        subsets_list = chain.from_iterable(
+            combinations(xs, n) for n in range(len(xs) + 1)
+        )
+        mus_subsets = []
+        lvs_subsets = []
+        for mod_indices in subsets_list:
+            if len(mod_indices) == 0:
+                continue
+            mus_sub = []
+            lvs_sub = []
+            for l, mod_idx in enumerate(sorted(mod_indices)):
+                mus_sub.append(mus[:, mod_idx, :].unsqueeze(1))
+                lvs_sub.append(lvs[:, mod_idx, :].unsqueeze(1))
+            mus_sub = torch.cat(mus_sub, dim=1)
+            lvs_sub = torch.cat(lvs_sub, dim=1)
+            mu_sub, lv_sub = self.aggregate_latents_poe(mus_sub, lvs_sub)
+            mus_subsets.append(mu_sub.unsqueeze(1))
+            lvs_subsets.append(lv_sub.unsqueeze(1))
+        mus_subsets = torch.cat(mus_subsets, dim=1)
+        lvs_subsets = torch.cat(lvs_subsets, dim=1)
+        mu_agg, lv_agg = self.aggregate_latents_moe(mus_subsets, lvs_subsets)
+        return mu_agg, lv_agg
 
     def reparametrize(self, mu, logvar):
         """
@@ -657,6 +760,8 @@ class MVVAE(pl.LightningModule):
         eps = std.data.new(std.size()).normal_()
         return eps.mul(std).add_(mu)
         # return dist.rsample()
+
+    # def compute_current_temperature(self, init_temp=None, final_temp=None, num_steps_annealing=None):
 
     def exp_annealing(self, init_temp=None, final_temp=None, num_steps_annealing=None):
         """

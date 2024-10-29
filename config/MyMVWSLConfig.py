@@ -21,9 +21,10 @@ class LogConfig:
     dir_logs: str = "/usr/scratch/projects/multimodality/mvvae/experiments"
 
     # logging frequencies
-    downstream_logging_frequency: int = 1
-    coherence_logging_frequency: int = 1
-    img_plotting_frequency: int = 1
+    downstream_logging_frequency: int = 50
+    coherence_logging_frequency: int = 50
+    img_plotting_frequency: int = 50
+    fid_logging_frequency: int = 1
 
     # debug level wandb
     debug: bool = False
@@ -34,11 +35,15 @@ class EvalConfig:
     # latent representation
     num_samples_train: int = 10000
     max_iteration: int = 10000
-
-    # latent representation evaluation
     eval_downstream_task: bool = True
+
     # coherence
     coherence: bool = True
+
+    # fid
+    path_inception_weights: str = (
+        "/usr/scratch/projects/multimodality/inception_v3/pt_inception-2015-12-05-6726825d.pth"
+    )
 
 
 @dataclass

@@ -1,8 +1,7 @@
 import os
 import pytorch_lightning as pl
-from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.loggers import WandbLogger
-from pytorch_lightning.utilities.model_summary import ModelSummary
+from pytorch_lightning.utilities.model_summary.model_summary import ModelSummary
 import wandb
 
 import hydra
@@ -16,11 +15,14 @@ from config.MyMVWSLConfig import LogConfig
 from config.ModelConfig import JointModelConfig
 from config.ModelConfig import MixedPriorModelConfig
 from config.ModelConfig import UnimodalModelConfig
+from config.ModelConfig import SplitModelConfig
 from config.DatasetConfig import PMtranslatedData75Config
 from config.DatasetConfig import CelebADataConfig
+from config.DatasetConfig import CUBDataConfig
 from config.MyMVWSLConfig import EvalConfig
 
 from mv_vaes.mv_joint_vae import MVJointVAE as MVJointVAE
+from mv_vaes.mv_split_vae import MVSplitVAE as MVSplitVAE
 from mv_vaes.mv_unimodal_vae import MVunimodalVAE as MVunimodalVAE
 from mv_vaes.mv_mixedprior_vae import MVMixedPriorVAE as MVMixedPriorVAE
 
@@ -30,19 +32,20 @@ cs.store(group="log", name="log", node=LogConfig)
 cs.store(group="model", name="joint", node=JointModelConfig)
 cs.store(group="model", name="mixedprior", node=MixedPriorModelConfig)
 cs.store(group="model", name="unimodal", node=UnimodalModelConfig)
+cs.store(group="model", name="split", node=SplitModelConfig)
 cs.store(group="eval", name="eval", node=EvalConfig)
 cs.store(group="dataset", name="PMtranslated75", node=PMtranslatedData75Config)
 cs.store(group="dataset", name="CelebA", node=CelebADataConfig)
-# cs.store(group="dataset", name="dataset", node=DataConfig)
+cs.store(group="dataset", name="cub", node=CUBDataConfig)
 cs.store(name="base_config", node=MyMVWSLConfig)
 
 
-@hydra.main(version_base=None, config_path="conf", config_name="config")
+@hydra.main(version_base=None, config_path="config", config_name="config")
 def run_experiment(cfg: MyMVWSLConfig):
     print(cfg)
     if cfg.log.wandb_local_instance:
         wandb.login(host=os.getenv("WANDB_LOCAL_URL"))
-    else:
+    elif not cfg.log.wandb_offline:
         wandb.login(host="https://api.wandb.ai")
     pl.seed_everything(cfg.seed, workers=True)
 
@@ -58,6 +61,8 @@ def run_experiment(cfg: MyMVWSLConfig):
         model = MVMixedPriorVAE(cfg)
     elif cfg.model.name == "unimodal":
         model = MVunimodalVAE(cfg)
+    elif cfg.model.name == "split":
+        model = MVSplitVAE(cfg)
     assert model is not None
     model.assign_label_names(label_names)
     summary = ModelSummary(model, max_depth=2)
@@ -73,12 +78,6 @@ def run_experiment(cfg: MyMVWSLConfig):
         entity=cfg.log.wandb_entity,
         save_dir=cfg.log.dir_logs,
     )
-    checkpoint_callback = ModelCheckpoint(
-        dirpath=wandb_logger.experiment.dir,
-        monitor=cfg.checkpoint_metric,
-        mode="min",
-        save_last=True,
-    )
     trainer = pl.Trainer(
         max_epochs=cfg.model.epochs,
         devices=1,
@@ -86,15 +85,14 @@ def run_experiment(cfg: MyMVWSLConfig):
         logger=wandb_logger,
         check_val_every_n_epoch=1,
         deterministic=True,
-        callbacks=[checkpoint_callback],
     )
 
     if cfg.log.debug:
         trainer.logger.watch(model, log="all")
     trainer.fit(model=model, train_dataloaders=train_loader, val_dataloaders=val_loader)
-    model.logger.log_metrics({f"final_scores/rec_loss": model.final_scores_rec_loss})
+    model.logger.log_metrics({"final_scores/rec_loss": model.final_scores_rec_loss})
     model.logger.log_metrics(
-        {f"final_scores/cond_rec_loss": model.final_scores_cond_rec_loss}
+        {"final_scores/cond_rec_loss": model.final_scores_cond_rec_loss}
     )
     for m, key in enumerate(model.modality_names):
         model.logger.log_metrics(
@@ -137,10 +135,6 @@ def run_experiment(cfg: MyMVWSLConfig):
                     ].mean()
                 }
             )
-    for m, key in enumerate(model.modality_names):
-        model.logger.log_metrics(
-            {f"final_scores/likelihood/" + key: model.final_scores_nll[m]}
-        )
 
 
 if __name__ == "__main__":

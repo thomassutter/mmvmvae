@@ -1,0 +1,10 @@
+defaults:
+  - base_config
+  - log: log
+  - eval: eval
+  - model: mixedprior
+  - dataset: PMtranslated75
+
+dataset:
+  dir_data_base: "PUT YOUR DATA DIR HERE"
+  dir_clfs_base: "PUT YOUR CLF DIR HERE"

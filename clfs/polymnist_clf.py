@@ -56,7 +56,10 @@ class ClfPolyMNIST(pl.LightningModule):
         for m in range(self.cfg.dataset.num_views):
             loss_m = losses[:, m, :].mean(dim=0)
             pred_m = preds[:, m, :]
-            acc_m = accuracy_score(labels.cpu(), np.argmax(pred_m.detach().cpu().numpy(), axis=1).astype(int))
+            acc_m = accuracy_score(
+                labels.cpu(),
+                np.argmax(pred_m.detach().cpu().numpy(), axis=1).astype(int),
+            )
             accs.append(acc_m)
             self.log(str_set + "/loss/v" + str(m), loss_m)
             self.log(str_set + "/accuracy/v" + str(m), acc_m)
@@ -65,12 +68,16 @@ class ClfPolyMNIST(pl.LightningModule):
         self.log(str_set + "/loss/mean_acc", mean_acc)
         return loss, mean_acc
 
-
-
     def forward(self, cfg, batch):
         imgs, labels = batch
-        preds = torch.zeros((cfg.model.batch_size, cfg.dataset.num_views, 10), device=cfg.model.device)
-        losses = torch.zeros((cfg.model.batch_size, cfg.dataset.num_views, 1), device=cfg.model.device)
+        preds = torch.zeros(
+            (cfg.model.batch_size_eval, cfg.dataset.num_views, 10),
+            device=cfg.model.device,
+        )
+        losses = torch.zeros(
+            (cfg.model.batch_size_eval, cfg.dataset.num_views, 1),
+            device=cfg.model.device,
+        )
         for m in range(cfg.dataset.num_views):
             imgs_m = imgs["m" + str(m)]
             pred_m = self.clfs[m](imgs_m)
@@ -87,4 +94,3 @@ class ClfPolyMNIST(pl.LightningModule):
         return {
             "optimizer": optimizer,
         }
-

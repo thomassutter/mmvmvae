@@ -10,9 +10,7 @@ from hydra.core.config_store import ConfigStore
 from config.MyClfConfig import MyClfConfig
 from config.MyClfConfig import ModelConfig
 from config.MyClfConfig import LogConfig
-from config.MyClfConfig import PMvanillaDataConfig
-from config.MyClfConfig import PMrotatedDataConfig
-from config.MyClfConfig import PMtranslatedData75Config
+from config.DatasetConfig import PMtranslatedData75Config
 
 from utils import dataset
 from clfs.polymnist_clf import ClfPolyMNIST
@@ -21,9 +19,7 @@ cs = ConfigStore.instance()
 # Registering the Config class with the name 'config'.
 cs.store(group="log", name="log", node=LogConfig)
 cs.store(group="model", name="model", node=ModelConfig)
-cs.store(group="dataset", name="PMvanilla", node=PMvanillaDataConfig)
 cs.store(group="dataset", name="PMtranslated75", node=PMtranslatedData75Config)
-cs.store(group="dataset", name="PMrotated", node=PMrotatedDataConfig)
 cs.store(name="base_config", node=MyClfConfig)
 
 
@@ -66,6 +62,9 @@ def run_experiment(cfg: MyClfConfig):
 
     trainer.logger.watch(model, log="all")
     trainer.fit(model=model, train_dataloaders=train_loader, val_dataloaders=val_loader)
+    # model.logger.log_metrics(
+    #     {f"final/accuracy/mean_acc" : model.final_accuracy}
+    # )
 
 
 if __name__ == "__main__":

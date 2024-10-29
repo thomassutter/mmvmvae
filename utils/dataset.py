@@ -1,11 +1,12 @@
-import os, sys
+import os
+import sys
 import json
 import torch
 from torchvision import transforms
-import PIL.Image as Image
 
 from utils.PolyMNISTDataset import PolyMNIST
 from utils.CelebADataset import CelebADataset
+from utils.CUBDataset import CUB
 
 transform = transforms.Compose([transforms.ToTensor()])
 
@@ -15,6 +16,8 @@ def get_dataset(cfg):
         ds = get_dataset_PM(cfg)
     elif cfg.dataset.name.startswith("celeba"):
         ds = get_dataset_celeba(cfg)
+    elif cfg.dataset.name.startswith("CUB"):
+        ds = get_dataset_cub(cfg)
     else:
         print("dataset unknown...exit")
         sys.exit()
@@ -39,7 +42,7 @@ def get_dataset_PM(cfg):
     )
     val_loader = torch.utils.data.DataLoader(
         val_dst,
-        batch_size=cfg.model.batch_size,
+        batch_size=cfg.model.batch_size_eval,
         shuffle=False,
         num_workers=cfg.dataset.num_workers,
         drop_last=True,
@@ -64,12 +67,35 @@ def get_dataset_celeba(cfg):
     )
     val_loader = torch.utils.data.DataLoader(
         d_eval,
-        batch_size=cfg.model.batch_size,
+        batch_size=cfg.model.batch_size_eval,
         shuffle=False,
         num_workers=cfg.dataset.num_workers,
         drop_last=True,
     )
     return train_loader, d_train, val_loader, d_eval
+
+def get_dataset_cub(cfg):
+    dir_data = os.path.join(cfg.dataset.dir_data)
+
+    train_dst = CUB(dir_data, train=True)
+    val_dst = CUB(dir_data, train=False)
+    torch.multiprocessing.set_sharing_strategy('file_system')
+    
+    train_loader = torch.utils.data.DataLoader(
+        train_dst,
+        batch_size=cfg.model.batch_size,
+        shuffle=True,
+        num_workers=cfg.dataset.num_workers,
+        drop_last=True,
+    )
+    val_loader = torch.utils.data.DataLoader(
+        val_dst,
+        batch_size=cfg.model.batch_size_eval,
+        shuffle=False,
+        num_workers=cfg.dataset.num_workers,
+        drop_last=True,
+    )
+    return train_loader, train_dst, val_loader, val_dst
 
 
 def get_transform_celeba(cfg):
@@ -92,5 +118,4 @@ def get_transform_celeba(cfg):
             transforms.ToTensor(),
         ]
     )
-
     return transform
