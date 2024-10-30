@@ -33,7 +33,7 @@ The data for the Rats dataset can be downloaded through the link: https://datadr
 
 This repository is for all the benchmark dataset experiments: PolyMNIST, bimodal CelebA, and CUB.
 
-For the Hippocampal neural activity experiment, please see [Hippocampal Neural Activity repository]().
+For the Hippocampal neural activity experiment, please see [Hippocampal Neural Activity repository](https://github.com/yangmeng96/mmvmvae-hippocampal).
 
 For the MIMIC-CXR experiments, please seee [MIMIC-CXR repository](https://github.com/agostini335/mmvmvae-mimic)
 
