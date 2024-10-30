@@ -35,7 +35,7 @@ This repository is for all the benchmark dataset experiments: PolyMNIST, bimodal
 
 For the Hippocampal neural activity experiment, please see [Hippocampal Neural Activity repository]().
 
-For the MIMIC-CXR experiments, please seee [MIMIC-CXR repository]()
+For the MIMIC-CXR experiments, please seee [MIMIC-CXR repository](https://github.com/agostini335/mmvmvae-mimic)
 
 # Benchmark Experiments
 
